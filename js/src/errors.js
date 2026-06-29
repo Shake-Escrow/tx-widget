@@ -1,0 +1,36 @@
+'use strict';
+
+// Every error surfaced to onError has a stable code, a human-readable message,
+// and a retryable flag. Retryable errors leave the widget in a recoverable
+// state; non-retryable errors should prompt the merchant UI to offer a
+// "start over" path (new intent + fresh widget mount).
+
+export const ERRORS = {
+  // Wallet
+  WALLET_NOT_FOUND:           { code: 'wallet_not_found',           retryable: false },
+  WALLET_CONNECTION_REJECTED: { code: 'wallet_connection_rejected',  retryable: true  },
+  WRONG_CHAIN:                { code: 'wrong_chain',                 retryable: true  },
+  CHAIN_SWITCH_REJECTED:      { code: 'chain_switch_rejected',       retryable: true  },
+
+  // Transactions
+  INSUFFICIENT_BALANCE:       { code: 'insufficient_balance',        retryable: false },
+  APPROVAL_REJECTED:          { code: 'approval_rejected',           retryable: true  },
+  APPROVAL_FAILED:            { code: 'approval_failed',             retryable: true  },
+  CONFIRMATION_REJECTED:      { code: 'confirmation_rejected',       retryable: true  },
+  TRANSACTION_REVERTED:       { code: 'transaction_reverted',        retryable: false },
+  PRICE_CHANGED:              { code: 'price_changed',               retryable: true  },
+
+  // Intent lifecycle
+  INTENT_EXPIRED:             { code: 'intent_expired',              retryable: false },
+  CHAIN_CONGESTED:            { code: 'chain_congested',             retryable: true  },
+};
+
+export class WidgetError extends Error {
+  constructor(type, message, cause) {
+    super(message);
+    this.name    = 'WidgetError';
+    this.code    = type.code;
+    this.retryable = type.retryable;
+    if (cause) this.cause = cause;
+  }
+}

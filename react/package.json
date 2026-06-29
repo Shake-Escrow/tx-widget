@@ -1,0 +1,27 @@
+{
+  "name": "@platform/react",
+  "version": "1.0.0",
+  "description": "React component wrapper for the token purchase widget",
+  "type": "module",
+  "main": "dist/index.cjs",
+  "module": "dist/index.js",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "scripts": {
+    "build": "esbuild src/index.jsx --bundle --format=esm --external:react --external:react-dom --external:@platform/js --outfile=dist/index.js && esbuild src/index.jsx --bundle --format=cjs --external:react --external:react-dom --external:@platform/js --outfile=dist/index.cjs"
+  },
+  "peerDependencies": {
+    "react": ">=18.0.0",
+    "react-dom": ">=18.0.0"
+  },
+  "dependencies": {
+    "@platform/js": "workspace:*"
+  },
+  "devDependencies": {
+    "esbuild": "^0.21.0"
+  }
+}
