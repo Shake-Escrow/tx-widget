@@ -1,41 +1,47 @@
 import { createContext, useContext, useEffect, useRef, useState } from 'react';
-import { loadXmagnet } from '@platform/js';
+import { loadPlatformClient } from '@platform/js';
 
 // ── Context ───────────────────────────────────────────────────────────────────
 
-const XmagnetContext = createContext(null);
+const PlatformContext = createContext(null);
 
-// Initialises the Xmagnet SDK once at the tree root. All TokenPurchaseWidget
-// instances in the tree share this initialisation.
+// Initialises the SDK once at the tree root. All TokenPurchaseWidget instances
+// in the tree share this initialisation.
 //
-//   <XmagnetProvider publishableKey={process.env.NEXT_PUBLIC_PLATFORM_KEY}>
+//   <PlatformProvider
+//     publishableKey={process.env.NEXT_PUBLIC_PLATFORM_KEY}
+//     baseUrl={process.env.NEXT_PUBLIC_API_URL}
+//   >
 //     ...
-//   </XmagnetProvider>
-export function XmagnetProvider({ publishableKey, options = {}, children }) {
-  const [xmagnet, setXmagnet] = useState(null);
+//   </PlatformProvider>
+export function PlatformProvider({ publishableKey, baseUrl, options = {}, children }) {
+  const [client, setClient] = useState(null);
 
   useEffect(() => {
     if (!publishableKey) return;
-    loadXmagnet(publishableKey, options).then(setXmagnet);
-  }, [publishableKey]);
+    loadPlatformClient(publishableKey, { ...options, baseUrl }).then(setClient);
+  }, [publishableKey, baseUrl]);
 
   return (
-    <XmagnetContext.Provider value={xmagnet}>
+    <PlatformContext.Provider value={client}>
       {children}
-    </XmagnetContext.Provider>
+    </PlatformContext.Provider>
   );
 }
 
-function useXmagnet() {
-  const xmagnet = useContext(XmagnetContext);
-  if (!xmagnet) throw new Error('TokenPurchaseWidget must be used inside <XmagnetProvider>.');
-  return xmagnet;
+function usePlatformClient() {
+  const client = useContext(PlatformContext);
+  if (!client) throw new Error('TokenPurchaseWidget must be used inside <PlatformProvider>.');
+  return client;
 }
 
 // ── TokenPurchaseWidget component ─────────────────────────────────────────────
 
 // Props:
-//   params          — _widget_params from the create intent response (required)
+//   params          — _widget_params from the create intent response.
+//                     Provide this OR clientSecret, not both.
+//   clientSecret    — tpi_…_secret_… from the create intent response.
+//                     Widget fetches its own params on mount.
 //   intentId        — the tpi_… ID (optional, passed to onSuccess)
 //   onReady         — () => void
 //   onChange        — ({ state, step }) => void
@@ -47,6 +53,7 @@ function useXmagnet() {
 //   style           — applied to the host div
 export function TokenPurchaseWidget({
   params,
+  clientSecret,
   intentId,
   onReady,
   onChange,
@@ -57,16 +64,20 @@ export function TokenPurchaseWidget({
   className,
   style,
 }) {
-  const xmagnet     = useXmagnet();
+  const client       = usePlatformClient();
   const containerRef = useRef(null);
   const widgetRef    = useRef(null);
 
-  useEffect(() => {
-    if (!xmagnet || !containerRef.current || !params) return;
+  // The effect re-runs when either params or clientSecret changes. Exactly one
+  // must be provided; the widget constructor will throw if neither or both are.
+  const initKey = params ?? clientSecret;
 
-    // Create and mount the widget
-    const widget = xmagnet.tokenPurchaseWidget({
+  useEffect(() => {
+    if (!client || !containerRef.current || !initKey) return;
+
+    const widget = client.tokenPurchaseWidget({
       params,
+      clientSecret,
       intentId,
       onReady,
       onChange,
@@ -83,10 +94,7 @@ export function TokenPurchaseWidget({
       widget.destroy();
       widgetRef.current = null;
     };
-  }, [xmagnet, params]);
-
-  // Surface the imperative widget object via ref if the parent needs it,
-  // but most use cases only need callbacks.
+  }, [client, initKey]);
 
   return <div ref={containerRef} className={className} style={style} />;
 }

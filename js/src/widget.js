@@ -7,51 +7,75 @@ import { makePublicClient, makeWalletClient, getDecimals, approveIfNeeded, buyTo
 
 // ── State machine ─────────────────────────────────────────────────────────────
 //
-//   idle → [selecting_wallet] → connecting → approving → confirming → succeeded
-//                             ↘                        ↘            ↘ failed
-//                               failed                   failed       expired
+//   [loading] → idle → [selecting_wallet] → connecting → approving → confirming → succeeded
+//      ↓                                  ↘            ↘           ↘           ↘
+//    failed                                 failed       failed      failed      failed / expired
+//
+// 'loading' is the initial state when the widget is initialised with a
+// clientSecret. It fetches _widget_params from the backend, then transitions
+// to 'idle'. With direct params the widget starts in 'idle' immediately.
 //
 // 'selecting_wallet' is only entered when more than one EIP-6963 wallet is
 // detected on the page — with zero or one wallet available, idle/failed go
 // straight to 'connecting'.
 //
-// Any state can also transition to 'expired' if the intent's 30-minute
-// window elapses (detected via the expiry timestamp in _widget_params).
+// 'expired' can be entered from any non-terminal state when the intent's
+// expiry timestamp elapses or is detected as already past.
 
 const VALID_TRANSITIONS = {
-  idle:             ['selecting_wallet', 'connecting'],
-  selecting_wallet: ['connecting', 'failed'],
-  connecting:       ['approving', 'failed'],
-  approving:        ['confirming', 'failed'],
+  loading:          ['idle', 'expired', 'failed'],
+  idle:             ['selecting_wallet', 'connecting', 'expired'],
+  selecting_wallet: ['connecting', 'failed', 'expired'],
+  connecting:       ['approving', 'failed', 'expired'],
+  approving:        ['confirming', 'failed', 'expired'],
   confirming:       ['succeeded', 'failed', 'expired'],
   succeeded:        [],
-  failed:           ['selecting_wallet', 'connecting'],  // retry resets to connecting
+  failed:           ['loading', 'selecting_wallet', 'connecting'],
   expired:          [],
 };
 
 export class TokenPurchaseWidget {
-  // options.params      — _widget_params from the create intent response (required)
-  // options.intentId    — the tpi_… ID, used in onSuccess callback (optional)
-  // options.onReady     — fired when the widget has rendered and is interactive
-  // options.onChange    — fired on every state transition: ({ state, step })
-  // options.onSuccess   — fired when purchase confirms: ({ intentId, txHash })
-  // options.onError     — fired on terminal/retryable error: ({ code, message, retryable })
+  // options.params       — _widget_params from the create intent response.
+  //                        Provide this OR clientSecret, not both.
+  // options.clientSecret — tpi_…_secret_… from the create intent response.
+  //                        When provided, the widget fetches its own params from
+  //                        the backend on mount(). Requires baseUrl.
+  // options.baseUrl      — root URL of the backend API, e.g. 'https://api.example.com'.
+  //                        Required when using clientSecret.
+  // options.intentId     — the tpi_… ID, used in onSuccess callback (optional)
+  // options.onReady      — fired when the widget has rendered and is interactive
+  // options.onChange     — fired on every state transition: ({ state, step })
+  // options.onSuccess    — fired when purchase confirms: ({ intentId, txHash })
+  // options.onError      — fired on terminal/retryable error: ({ code, message, retryable })
   // options.onPriceChange — fired if price moves between intent creation and confirm
-  // options.appearance  — { theme, variables, rules }
-  // options.walletConnect — { projectId } (WalletConnect v2 — not yet implemented)
+  // options.appearance   — { theme, variables, rules }
   constructor(options = {}) {
     const { params } = options;
-    if (!params) throw new Error('TokenPurchaseWidget: options.params is required.');
-    if (!params.contract_address)          throw new Error('params.contract_address is required.');
-    if (!params.payment_currency_contract) throw new Error('params.payment_currency_contract is required.');
-    if (!params.customer_ref)              throw new Error('params.customer_ref is required.');
-    if (!params.amount)                    throw new Error('params.amount is required.');
-    if (!params.payment_currency)          throw new Error('params.payment_currency is required.');
-    if (!params.network)                   throw new Error('params.network is required.');
 
-    this._params     = params;
-    this._intentId   = options.intentId ?? null;
-    this._appearance = options.appearance ?? {};
+    if (params && options.clientSecret) {
+      throw new Error('TokenPurchaseWidget: provide either params or clientSecret, not both.');
+    }
+    if (!params && !options.clientSecret) {
+      throw new Error('TokenPurchaseWidget: params or clientSecret is required.');
+    }
+    if (options.clientSecret && !options._baseUrl && !options.baseUrl) {
+      throw new Error('TokenPurchaseWidget: baseUrl is required when using clientSecret.');
+    }
+
+    if (params) {
+      if (!params.contract_address)          throw new Error('params.contract_address is required.');
+      if (!params.payment_currency_contract) throw new Error('params.payment_currency_contract is required.');
+      if (!params.customer_ref)              throw new Error('params.customer_ref is required.');
+      if (!params.amount)                    throw new Error('params.amount is required.');
+      if (!params.payment_currency)          throw new Error('params.payment_currency is required.');
+      if (!params.network)                   throw new Error('params.network is required.');
+    }
+
+    this._params       = params ?? null;
+    this._clientSecret = options.clientSecret ?? null;
+    this._baseUrl      = options._baseUrl ?? options.baseUrl ?? null;
+    this._intentId     = options.intentId ?? null;
+    this._appearance   = options.appearance ?? {};
 
     // Callbacks
     this._onReady       = options.onReady       ?? null;
@@ -60,8 +84,8 @@ export class TokenPurchaseWidget {
     this._onError       = options.onError        ?? null;
     this._onPriceChange = options.onPriceChange  ?? null;
 
-    // Internal state
-    this._state     = 'idle';
+    // Internal state — 'loading' if we need to fetch params first, else 'idle'
+    this._state     = this._clientSecret ? 'loading' : 'idle';
     this._ui        = null;
     this._container = null;
     this._provider  = null;
@@ -82,9 +106,19 @@ export class TokenPurchaseWidget {
     this._ui = new WidgetUI(el, this._appearance);
     this._ui.setButtonHandler(() => this._handleButtonClick());
     this._ui.setWalletSelectHandler((uuid) => this._handleWalletSelect(uuid));
-    this._ui.render('idle', this._params);
 
-    this._onReady?.();
+    if (this._clientSecret) {
+      // Params aren't available yet — show a loading spinner while we fetch them.
+      // this._state is already 'loading' from the constructor; bypass _transition
+      // since there's no prior state to validate against.
+      this._ui.render('loading', null);
+      this._loadParams();
+    } else {
+      this._ui.render('idle', this._params);
+      this._scheduleExpiry();
+      this._onReady?.();
+    }
+
     return this;
   }
 
@@ -110,7 +144,7 @@ export class TokenPurchaseWidget {
     }
 
     this._state = next;
-    const step = { idle: 0, selecting_wallet: 0, connecting: 0, approving: 1, confirming: 2, succeeded: 3 }[next] ?? null;
+    const step = { loading: null, idle: 0, selecting_wallet: 0, connecting: 0, approving: 1, confirming: 2, succeeded: 3 }[next] ?? null;
 
     this._ui?.render(next, this._params, extra);
     this._onChange?.({ state: next, step });
@@ -119,16 +153,25 @@ export class TokenPurchaseWidget {
   // ── Button handler ──────────────────────────────────────────────────────────
 
   _handleButtonClick() {
-    if (this._state === 'idle' || this._state === 'failed') {
-      this._startConnection();
+    if (this._state !== 'idle' && this._state !== 'failed') return;
+
+    if (this._isExpired()) {
+      this._transition('expired');
+      return;
     }
+
+    // If params haven't been loaded yet (clientSecret flow initial load failed),
+    // retry the fetch rather than trying to connect a wallet.
+    if (!this._params) {
+      this._transition('loading');
+      this._loadParams();
+      return;
+    }
+
+    this._startConnection();
   }
 
-  // Decides whether the user needs to pick a wallet first. With zero wallets
-  // detected we fall through to the legacy window.ethereum path (and let
-  // connectWallet surface WALLET_NOT_FOUND if that's empty too); with exactly
-  // one we connect directly — no point making the user click twice to confirm
-  // the only option; with more than one we ask.
+  // Decides whether the user needs to pick a wallet first.
   _startConnection() {
     const discovered = getDiscoveredProviders();
 
@@ -142,10 +185,85 @@ export class TokenPurchaseWidget {
     this._run(discovered[0]?.provider ?? detectInjectedProvider());
   }
 
-  // Called by the UI when the user picks a wallet from the multi-wallet list.
   _handleWalletSelect(uuid) {
     const entry = getDiscoveredProviders().find((p) => p.uuid === uuid);
     this._run(entry?.provider ?? null);
+  }
+
+  // ── client_secret: fetch params from backend ────────────────────────────────
+
+  // Fetches _widget_params from the backend using the clientSecret.
+  // The endpoint is public — possession of the secret is the auth.
+  async _fetchWidgetParams() {
+    const url = `${this._baseUrl}/v1/widget/params?client_secret=${encodeURIComponent(this._clientSecret)}`;
+    const res = await fetch(url);
+
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      if (res.status === 410) {
+        throw new WidgetError(ERRORS.INTENT_EXPIRED, 'This purchase link has expired.');
+      }
+      throw new WidgetError(
+        ERRORS.PARAMS_LOAD_FAILED,
+        body.error?.message ?? `Failed to load widget parameters (${res.status}).`,
+      );
+    }
+
+    const json = await res.json();
+    return json._widget_params ?? json;
+  }
+
+  // Called on initial mount (clientSecret flow) and on retry after a load failure.
+  async _loadParams() {
+    try {
+      const params = await this._fetchWidgetParams();
+
+      // Guard: widget may have been destroyed while fetch was in flight.
+      if (!this._ui) return;
+
+      this._params = params;
+
+      if (this._isExpired()) {
+        this._transition('expired');
+        return;
+      }
+
+      this._transition('idle');
+      this._scheduleExpiry();
+      this._onReady?.();
+    } catch (err) {
+      if (!this._ui) return;
+      this._handleError(err);
+    }
+  }
+
+  // ── Intent expiry ───────────────────────────────────────────────────────────
+
+  // Returns true if the intent's expiry timestamp has already elapsed.
+  _isExpired() {
+    return !!(this._params?.expires_at && Date.now() >= this._params.expires_at * 1000);
+  }
+
+  // Schedules a transition to 'expired' for intents that carry an expires_at
+  // timestamp. Only fires while the widget is idle or waiting for wallet
+  // selection — during active transaction states the contract will revert
+  // on-chain, surfacing a TRANSACTION_REVERTED error naturally.
+  _scheduleExpiry() {
+    if (!this._params?.expires_at) return;
+
+    const msUntilExpiry = (this._params.expires_at * 1000) - Date.now();
+    if (msUntilExpiry <= 0) {
+      this._transition('expired');
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      if (['idle', 'loading', 'selecting_wallet'].includes(this._state)) {
+        this._transition('expired');
+      }
+    }, msUntilExpiry);
+
+    this._cleanups.push(() => clearTimeout(timer));
   }
 
   // ── Main flow ───────────────────────────────────────────────────────────────
@@ -213,6 +331,20 @@ export class TokenPurchaseWidget {
   // ── Price change interception ───────────────────────────────────────────────
 
   async _handlePriceChange(publicClient, walletClient, decimals) {
+    // Try to get the current price so the merchant's handler can show it.
+    // This only works in the clientSecret flow — in the direct _widget_params
+    // flow the widget has no way to call the backend independently.
+    let newPrice = null;
+    if (this._clientSecret) {
+      try {
+        const fresh = await this._fetchWidgetParams();
+        newPrice = fresh.price_per_token ?? fresh.price_snapshot ?? null;
+      } catch {
+        // Non-fatal — proceed with newPrice: null rather than surfacing a
+        // secondary error on top of the already-in-progress price change.
+      }
+    }
+
     if (!this._onPriceChange) {
       // No handler supplied — fail immediately
       this._handleError(new WidgetError(ERRORS.PRICE_CHANGED, 'Token price changed before confirmation.'));
@@ -223,10 +355,8 @@ export class TokenPurchaseWidget {
     // The merchant's onPriceChange handler calls confirmed() to resume.
     await new Promise((resolve, reject) => {
       this._onPriceChange({
-        // In a full implementation, fetch the current price from GET /v1/account
-        // For now, signal that price has changed without the new value
-        oldPrice: this._params.price_snapshot ?? null,
-        newPrice: null,  // would come from a fresh GET /v1/account call
+        oldPrice:  this._params.price_per_token ?? this._params.price_snapshot ?? null,
+        newPrice,
         confirmed: resolve,
         canceled:  () => reject(new WidgetError(ERRORS.PRICE_CHANGED, 'Price change not accepted.')),
       });

@@ -215,6 +215,15 @@ const ICON_X = `<svg width="24" height="24" viewBox="0 0 24 24" fill="none">
 const STEP_LABELS = ['Connect wallet', 'Approve', 'Purchase'];
 
 const STATE_CONTENT = {
+  // Shown while the widget is fetching its own params via clientSecret.
+  loading: () => ({
+    step: null,
+    icon: 'spinner',
+    label: 'Loading…',
+    sublabel: 'Fetching payment details.',
+    button: null,
+  }),
+
   idle: (params) => ({
     step: 0,
     icon: null,

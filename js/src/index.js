@@ -2,15 +2,15 @@
 
 import { TokenPurchaseWidget } from './widget.js';
 
-// ── Xmagnet ───────────────────────────────────────────────────────────────────
+// ── PlatformClient ────────────────────────────────────────────────────────────
 
-export class Xmagnet {
+export class PlatformClient {
   // publishableKey  — pk_live_… or pk_test_…
-  // options.walletConnect.projectId — WalletConnect v2 project ID (optional)
+  // options.baseUrl — root URL of the backend API (required for clientSecret flow)
   constructor(publishableKey, options = {}) {
-    if (!publishableKey) throw new Error('Xmagnet: publishableKey is required.');
+    if (!publishableKey) throw new Error('SDK: publishableKey is required.');
     if (!publishableKey.startsWith('pk_live_') && !publishableKey.startsWith('pk_test_')) {
-      throw new Error('Xmagnet: publishableKey must begin with pk_live_ or pk_test_.');
+      throw new Error('SDK: publishableKey must begin with pk_live_ or pk_test_.');
     }
 
     this._publishableKey = publishableKey;
@@ -19,42 +19,41 @@ export class Xmagnet {
 
   // Creates and returns a TokenPurchaseWidget instance.
   //
-  // Required option:
-  //   options.params — the _widget_params object from the POST /v1/token_purchase_intents response
+  // Initialise with params (direct) or clientSecret (recommended):
+  //
+  //   Direct — merchant passes _widget_params from their server to the frontend:
+  //     tokenPurchaseWidget({ params: _widget_params })
+  //
+  //   clientSecret — widget fetches its own params on mount():
+  //     tokenPurchaseWidget({ clientSecret: 'tpi_…_secret_…' })
+  //     Requires baseUrl set on the SDK constructor or this call.
   //
   // The widget is not yet mounted; call widget.mount('#container') after creation.
-  //
-  // NOTE: This API uses _widget_params from the create intent response rather
-  // than a client_secret (as described in frontend-widget.md). Adding
-  // client_secret support requires a backend endpoint that the widget can call
-  // to fetch its params — a straightforward addition when needed.
   tokenPurchaseWidget(options = {}) {
     return new TokenPurchaseWidget({
       ...options,
       _publishableKey: this._publishableKey,
+      _baseUrl:        options.baseUrl ?? this._options.baseUrl ?? null,
       walletConnect:   options.walletConnect ?? this._options.walletConnect,
     });
   }
 }
 
-// ── loadXmagnet ───────────────────────────────────────────────────────────────
+// ── loadPlatformClient ────────────────────────────────────────────────────────
 
 // Async loader — use this when loading the SDK dynamically or via npm.
 //
-//   const xmagnet = await loadXmagnet('pk_live_…');
+//   const client = await loadPlatformClient('pk_live_…', { baseUrl: 'https://…' });
 //
-export async function loadXmagnet(publishableKey, options = {}) {
-  return new Xmagnet(publishableKey, options);
+export async function loadPlatformClient(publishableKey, options = {}) {
+  return new PlatformClient(publishableKey, options);
 }
 
 // Also expose as a synchronous global when loaded via <script> tag.
-// The script sets window.Xmagnet so merchants can do:
-//   const xmagnet = Xmagnet('pk_live_…');
 if (typeof window !== 'undefined') {
-  // Allow Xmagnet('pk_…') as well as new Xmagnet('pk_…')
-  const XmagnetFactory = (publishableKey, options) => new Xmagnet(publishableKey, options);
-  XmagnetFactory.loadXmagnet = loadXmagnet;
-  window.Xmagnet = XmagnetFactory;
+  const factory = (publishableKey, options) => new PlatformClient(publishableKey, options);
+  factory.loadPlatformClient = loadPlatformClient;
+  window.PlatformWidget = factory;
 }
 
 export { TokenPurchaseWidget };

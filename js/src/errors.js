@@ -21,6 +21,7 @@ export const ERRORS = {
   PRICE_CHANGED:              { code: 'price_changed',               retryable: true  },
 
   // Intent lifecycle
+  PARAMS_LOAD_FAILED:         { code: 'params_load_failed',          retryable: true  },
   INTENT_EXPIRED:             { code: 'intent_expired',              retryable: false },
   CHAIN_CONGESTED:            { code: 'chain_congested',             retryable: true  },
 };
