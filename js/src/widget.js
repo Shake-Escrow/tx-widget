@@ -338,7 +338,7 @@ export class TokenPurchaseWidget {
     if (this._clientSecret) {
       try {
         const fresh = await this._fetchWidgetParams();
-        newPrice = fresh.price_per_token ?? fresh.price_snapshot ?? null;
+        newPrice = fresh.current_price ?? fresh.price_per_token ?? fresh.price_snapshot ?? null;
       } catch {
         // Non-fatal — proceed with newPrice: null rather than surfacing a
         // secondary error on top of the already-in-progress price change.

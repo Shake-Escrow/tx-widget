@@ -1,0 +1,3 @@
+tx-widget
+
+A self-contained, embeddable widget for accepting ERC-20 token payments on EVM-compatible chains. Handles the full purchase flow — wallet discovery (EIP-6963 multi-provider), spend approval, and smart contract transaction submission — in an encapsulated Shadow DOM component that can be dropped into any web storefront. Ships as ESM, CJS, and a standalone browser bundle, with a React wrapper for framework-based projects.
