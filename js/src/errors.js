@@ -19,9 +19,14 @@ export const ERRORS = {
   CONFIRMATION_REJECTED:      { code: 'confirmation_rejected',       retryable: true  },
   TRANSACTION_REVERTED:       { code: 'transaction_reverted',        retryable: false },
   PRICE_CHANGED:              { code: 'price_changed',               retryable: true  },
+  VOUCHER_EXPIRED:            { code: 'voucher_expired',             retryable: true  },
+  ALREADY_PURCHASED:          { code: 'already_purchased',           retryable: false },
+  INVALID_SIGNATURE:          { code: 'invalid_signature',           retryable: false },
+  PAYMENT_TOKEN_NOT_ACCEPTED: { code: 'payment_token_not_accepted',  retryable: false },
 
   // Intent lifecycle
   PARAMS_LOAD_FAILED:         { code: 'params_load_failed',          retryable: true  },
+  VOUCHER_LOAD_FAILED:        { code: 'voucher_load_failed',         retryable: true  },
   INTENT_EXPIRED:             { code: 'intent_expired',              retryable: false },
   CHAIN_CONGESTED:            { code: 'chain_congested',             retryable: true  },
 };

@@ -65,8 +65,30 @@ export const SWAP_ABI = [
     name: 'buy',
     type: 'function',
     stateMutability: 'nonpayable',
-    inputs:  [{ name: 'customerRef', type: 'bytes32' }],
+    inputs: [
+      { name: 'customerRef', type: 'bytes32' },
+      { name: 'paymentToken', type: 'address' },
+      { name: 'paymentAmount', type: 'uint256' },
+      { name: 'rate', type: 'uint256' },
+      { name: 'deadline', type: 'uint256' },
+      { name: 'signature', type: 'bytes' },
+    ],
     outputs: [],
+  },
+  {
+    name: 'Purchase',
+    type: 'event',
+    anonymous: false,
+    inputs: [
+      { name: 'customerRef', type: 'bytes32', indexed: true },
+      { name: 'buyer', type: 'address', indexed: true },
+      { name: 'paymentToken', type: 'address', indexed: true },
+      { name: 'paymentAmount', type: 'uint256', indexed: false },
+      { name: 'merchantPaymentAmount', type: 'uint256', indexed: false },
+      { name: 'feeAmount', type: 'uint256', indexed: false },
+      { name: 'xmagAmount', type: 'uint256', indexed: false },
+      { name: 'rate', type: 'uint256', indexed: false },
+    ],
   },
 ];
 
@@ -158,19 +180,28 @@ export async function approveIfNeeded(
 }
 
 // Submits the buy() call on the swap contract and waits for it to confirm.
-export async function buyTokens(publicClient, walletClient, swapAddress, customerRef, walletAddress) {
+// paymentToken, paymentAmount, rate, deadline, and signature come from the
+// backend-signed voucher (typically returned alongside _widget_params).
+export async function buyTokens(
+  publicClient, walletClient, swapAddress,
+  customerRef, paymentToken, paymentAmount, rate, deadline, signature,
+  walletAddress
+) {
   let txHash;
   try {
     txHash = await walletClient.writeContract({
       address: swapAddress,
       abi: SWAP_ABI,
       functionName: 'buy',
-      args: [customerRef],
+      args: [customerRef, paymentToken, paymentAmount, rate, deadline, signature],
       account: walletAddress,
     });
   } catch (err) {
-    if (isUserRejection(err)) throw new WidgetError(ERRORS.CONFIRMATION_REJECTED, 'Purchase signature rejected.');
-    if (isPriceChanged(err))  throw new WidgetError(ERRORS.PRICE_CHANGED, 'Token price changed before confirmation.');
+    if (isUserRejection(err))          throw new WidgetError(ERRORS.CONFIRMATION_REJECTED, 'Purchase signature rejected.');
+    if (isVoucherExpired(err))         throw new WidgetError(ERRORS.VOUCHER_EXPIRED, 'This purchase quote expired — please try again.');
+    if (isVoucherAlreadyUsed(err))     throw new WidgetError(ERRORS.ALREADY_PURCHASED, 'This purchase has already been submitted.');
+    if (isInvalidSignature(err))       throw new WidgetError(ERRORS.INVALID_SIGNATURE, 'Could not verify the purchase quote — please try again.');
+    if (isPaymentTokenNotAccepted(err)) throw new WidgetError(ERRORS.PAYMENT_TOKEN_NOT_ACCEPTED, 'This payment currency is no longer accepted.');
     throw new WidgetError(ERRORS.TRANSACTION_REVERTED, err.message, err);
   }
 
@@ -194,7 +225,21 @@ function isUserRejection(err) {
   );
 }
 
-function isPriceChanged(err) {
-  const msg = err?.message?.toLowerCase() ?? '';
-  return msg.includes('price') || msg.includes('price_changed');
+// XMAGSwap has no "price changed" revert path — a presented voucher's rate
+// is either honored as-is or the voucher is rejected outright. These match
+// its actual custom errors instead (see XMAGSwap.sol).
+function isVoucherExpired(err) {
+  return (err?.message?.toLowerCase() ?? '').includes('voucherexpired');
+}
+
+function isVoucherAlreadyUsed(err) {
+  return (err?.message?.toLowerCase() ?? '').includes('customerrefalreadyused');
+}
+
+function isInvalidSignature(err) {
+  return (err?.message?.toLowerCase() ?? '').includes('invalidsignature');
+}
+
+function isPaymentTokenNotAccepted(err) {
+  return (err?.message?.toLowerCase() ?? '').includes('paymenttokennotaccepted');
 }

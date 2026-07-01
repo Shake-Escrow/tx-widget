@@ -11,9 +11,11 @@ import { makePublicClient, makeWalletClient, getDecimals, approveIfNeeded, buyTo
 //      ↓                                  ↘            ↘           ↘           ↘
 //    failed                                 failed       failed      failed      failed / expired
 //
-// 'loading' is the initial state when the widget is initialised with a
-// clientSecret. It fetches _widget_params from the backend, then transitions
-// to 'idle'. With direct params the widget starts in 'idle' immediately.
+// 'loading' is the initial state when the widget is initialised without
+// direct `params`. It fetches _widget_params from the backend, then
+// transitions to 'idle'. With direct params the widget starts in 'idle'
+// immediately — clientSecret is still required either way, since buying
+// needs a live voucher request after wallet connect.
 //
 // 'selecting_wallet' is only entered when more than one EIP-6963 wallet is
 // detected on the page — with zero or one wallet available, idle/failed go
@@ -35,13 +37,16 @@ const VALID_TRANSITIONS = {
 };
 
 export class TokenPurchaseWidget {
-  // options.params       — _widget_params from the create intent response.
-  //                        Provide this OR clientSecret, not both.
   // options.clientSecret — tpi_…_secret_… from the create intent response.
-  //                        When provided, the widget fetches its own params from
-  //                        the backend on mount(). Requires baseUrl.
+  //                        Always required: buying requires a live voucher
+  //                        request after wallet connect (see _fetchVoucher),
+  //                        which this secret authorizes.
+  // options.params       — optional _widget_params from the create intent
+  //                        response. If provided, skips the initial params
+  //                        fetch for a faster first paint; clientSecret is
+  //                        still required for the voucher step later.
   // options.baseUrl      — root URL of the backend API, e.g. 'https://api.example.com'.
-  //                        Required when using clientSecret.
+  //                        Always required.
   // options.intentId     — the tpi_… ID, used in onSuccess callback (optional)
   // options.onReady      — fired when the widget has rendered and is interactive
   // options.onChange     — fired on every state transition: ({ state, step })
@@ -52,14 +57,17 @@ export class TokenPurchaseWidget {
   constructor(options = {}) {
     const { params } = options;
 
-    if (params && options.clientSecret) {
-      throw new Error('TokenPurchaseWidget: provide either params or clientSecret, not both.');
+    // clientSecret + baseUrl are required unconditionally now, even when
+    // `params` is also supplied for a fast first paint. Buying requires a
+    // live POST /v1/widget/voucher call after wallet connect — XMAGSwap.buy()
+    // signs the buyer's address into the voucher, so no static params object
+    // can carry a usable one. The old "params only, zero backend calls"
+    // mode no longer exists.
+    if (!options.clientSecret) {
+      throw new Error('TokenPurchaseWidget: clientSecret is required (even when params is also provided) — a live voucher request after wallet connect is required to buy.');
     }
-    if (!params && !options.clientSecret) {
-      throw new Error('TokenPurchaseWidget: params or clientSecret is required.');
-    }
-    if (options.clientSecret && !options._baseUrl && !options.baseUrl) {
-      throw new Error('TokenPurchaseWidget: baseUrl is required when using clientSecret.');
+    if (!options._baseUrl && !options.baseUrl) {
+      throw new Error('TokenPurchaseWidget: baseUrl is required.');
     }
 
     if (params) {
@@ -72,8 +80,8 @@ export class TokenPurchaseWidget {
     }
 
     this._params       = params ?? null;
-    this._clientSecret = options.clientSecret ?? null;
-    this._baseUrl      = options._baseUrl ?? options.baseUrl ?? null;
+    this._clientSecret = options.clientSecret;
+    this._baseUrl      = options._baseUrl ?? options.baseUrl;
     this._intentId     = options.intentId ?? null;
     this._appearance   = options.appearance ?? {};
 
@@ -84,8 +92,10 @@ export class TokenPurchaseWidget {
     this._onError       = options.onError        ?? null;
     this._onPriceChange = options.onPriceChange  ?? null;
 
-    // Internal state — 'loading' if we need to fetch params first, else 'idle'
-    this._state     = this._clientSecret ? 'loading' : 'idle';
+    // Internal state — 'loading' only if we still need to fetch initial
+    // params; clientSecret is always present now, but direct `params` still
+    // gets the fast path straight to 'idle'.
+    this._state     = this._params ? 'idle' : 'loading';
     this._ui        = null;
     this._container = null;
     this._provider  = null;
@@ -107,7 +117,7 @@ export class TokenPurchaseWidget {
     this._ui.setButtonHandler(() => this._handleButtonClick());
     this._ui.setWalletSelectHandler((uuid) => this._handleWalletSelect(uuid));
 
-    if (this._clientSecret) {
+    if (!this._params) {
       // Params aren't available yet — show a loading spinner while we fetch them.
       // this._state is already 'loading' from the constructor; bypass _transition
       // since there's no prior state to validate against.
@@ -300,24 +310,32 @@ export class TokenPurchaseWidget {
         this._address,
       );
 
-      // Step 3 — Buy
+      // Step 3 — Get a buyer-bound voucher, then buy.
+      // approve() above is price-independent (it only authorizes spending
+      // this._params.amount of the payment currency), so it's safe to have
+      // done it before the voucher exists. The voucher is fetched fresh
+      // right here, immediately before the signature prompt, to keep its
+      // deadline window as tight as possible.
       this._transition('confirming');
-      let txHash;
-      try {
-        txHash = await buyTokens(
-          publicClient,
-          walletClient,
-          this._params.contract_address,
-          this._params.customer_ref,
-          this._address,
-        );
-      } catch (err) {
-        if (err instanceof WidgetError && err.code === 'price_changed') {
-          await this._handlePriceChange(publicClient, walletClient, decimals);
-          return;
-        }
-        throw err;
+
+      const voucher = await this._fetchVoucher();
+
+      if (this._priceMoved(voucher)) {
+        await this._confirmPriceChange(voucher);
       }
+
+      const txHash = await buyTokens(
+        publicClient,
+        walletClient,
+        this._params.contract_address,
+        this._params.customer_ref,
+        voucher.payment_token,
+        BigInt(voucher.payment_amount),
+        BigInt(voucher.rate),
+        BigInt(voucher.deadline),
+        voucher.signature,
+        this._address,
+      );
 
       // Succeeded
       this._transition('succeeded', { txHash });
@@ -328,54 +346,58 @@ export class TokenPurchaseWidget {
     }
   }
 
+  // ── Voucher fetch (post wallet-connect, pre buy()) ──────────────────────────
+
+  // Fetches a purchase voucher bound to this._address. Must happen after
+  // wallet connect — see routes/widgetVoucher.js for why the backend can't
+  // sign one any earlier.
+  async _fetchVoucher() {
+    const res = await fetch(`${this._baseUrl}/v1/widget/voucher`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client_secret: this._clientSecret, buyer: this._address }),
+    });
+
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      if (res.status === 410) {
+        throw new WidgetError(ERRORS.INTENT_EXPIRED, 'This purchase link has expired.');
+      }
+      throw new WidgetError(
+        ERRORS.VOUCHER_LOAD_FAILED,
+        body.error?.message ?? `Failed to load purchase voucher (${res.status}).`,
+      );
+    }
+
+    return res.json();
+  }
+
   // ── Price change interception ───────────────────────────────────────────────
 
-  async _handlePriceChange(publicClient, walletClient, decimals) {
-    // Try to get the current price so the merchant's handler can show it.
-    // This only works in the clientSecret flow — in the direct _widget_params
-    // flow the widget has no way to call the backend independently.
-    let newPrice = null;
-    if (this._clientSecret) {
-      try {
-        const fresh = await this._fetchWidgetParams();
-        newPrice = fresh.current_price ?? fresh.price_per_token ?? fresh.price_snapshot ?? null;
-      } catch {
-        // Non-fatal — proceed with newPrice: null rather than surfacing a
-        // secondary error on top of the already-in-progress price change.
-      }
-    }
+  _priceMoved(voucher) {
+    return (
+      voucher.price_snapshot != null &&
+      voucher.current_price != null &&
+      voucher.price_snapshot !== voucher.current_price
+    );
+  }
 
+  // Pauses before the buy() signature prompt and surfaces the price move to
+  // the merchant. The merchant's onPriceChange handler calls confirmed() to
+  // proceed with the voucher already in hand, or canceled() to abort.
+  async _confirmPriceChange(voucher) {
     if (!this._onPriceChange) {
-      // No handler supplied — fail immediately
-      this._handleError(new WidgetError(ERRORS.PRICE_CHANGED, 'Token price changed before confirmation.'));
-      return;
+      throw new WidgetError(ERRORS.PRICE_CHANGED, 'Token price changed before confirmation.');
     }
 
-    // Pause at confirming state and surface the price change to the merchant.
-    // The merchant's onPriceChange handler calls confirmed() to resume.
     await new Promise((resolve, reject) => {
       this._onPriceChange({
-        oldPrice:  this._params.price_per_token ?? this._params.price_snapshot ?? null,
-        newPrice,
+        oldPrice:  voucher.price_snapshot,
+        newPrice:  voucher.current_price,
         confirmed: resolve,
         canceled:  () => reject(new WidgetError(ERRORS.PRICE_CHANGED, 'Price change not accepted.')),
       });
     });
-
-    // Retry the buy at the new price
-    try {
-      const txHash = await buyTokens(
-        publicClient,
-        walletClient,
-        this._params.contract_address,
-        this._params.customer_ref,
-        this._address,
-      );
-      this._transition('succeeded', { txHash });
-      this._onSuccess?.({ intentId: this._intentId, txHash });
-    } catch (err) {
-      this._handleError(err);
-    }
   }
 
   // ── Error handling ──────────────────────────────────────────────────────────
