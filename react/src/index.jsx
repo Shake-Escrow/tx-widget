@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useRef, useState } from 'react';
-import { loadPlatformClient } from '@platform/js';
+import { loadPlatformClient } from '@shake-defi/js';
 
 // ── Context ───────────────────────────────────────────────────────────────────
 
