@@ -19,12 +19,14 @@ export class PlatformClient {
 
   // Creates and returns a TokenPurchaseWidget instance.
   //
-  // Initialise with params (direct) or clientSecret (recommended):
+  // clientSecret is always required — even when params is also supplied for a
+  // fast first paint — because the widget fetches a live buyer-bound voucher
+  // after wallet connect via POST /v1/widget/voucher.
   //
-  //   Direct — merchant passes _widget_params from their server to the frontend:
-  //     tokenPurchaseWidget({ params: _widget_params })
+  //   Fast start (params prefetched by merchant):
+  //     tokenPurchaseWidget({ clientSecret: 'tpi_…_secret_…', params: { … } })
   //
-  //   clientSecret — widget fetches its own params on mount():
+  //   Server-side render (widget fetches params on mount):
   //     tokenPurchaseWidget({ clientSecret: 'tpi_…_secret_…' })
   //     Requires baseUrl set on the SDK constructor or this call.
   //

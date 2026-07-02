@@ -16,7 +16,7 @@ npm install @shake-defi/react @shake-defi/js
 
 1. Your **backend** creates a `TokenPurchaseIntent` (server-side, using your secret key) and returns the `_widget_params` from that response to your frontend.
 2. Your React app wraps its checkout UI in `<PlatformProvider publishableKey="pk_live_…">`.
-3. `<TokenPurchaseWidget params={widgetParams} />` renders the actual payment UI and drives wallet connection, approval, and confirmation.
+3. `<TokenPurchaseWidget clientSecret={intent.client_secret} params={widgetParams} />` renders the actual payment UI and drives wallet connection, approval, and confirmation. `clientSecret` is always required — `params` is optional (for faster first paint).
 4. Your backend receives the final result via **webhook** — treat `onSuccess` as a UX signal, not a fulfillment trigger.
 
 See the [`@shake-defi/js` README](https://www.npmjs.com/package/@shake-defi/js) for the backend (customer + intent creation) side of this flow, the full appearance/theming reference, and the error code table — this README covers the React-specific API only.
@@ -35,13 +35,14 @@ function App() {
 }
 
 function Checkout() {
-  // widgetParams and intentId come from your backend's
-  // POST /token_purchase_intents response (intent._widget_params, intent.id)
-  const { widgetParams, intentId } = useCheckoutIntent();
+  // widgetParams, intentId, and clientSecret come from your backend's
+  // POST /token_purchase_intents response (intent._widget_params, intent.id, intent.client_secret)
+  const { widgetParams, clientSecret, intentId } = useCheckoutIntent();
 
   return (
     <TokenPurchaseWidget
-      params={widgetParams}
+      clientSecret={clientSecret}      // required
+      params={widgetParams}             // optional, for faster first paint
       intentId={intentId}
       appearance={{ theme: 'stripe' }}
       onSuccess={({ txHash }) => {
@@ -85,7 +86,8 @@ Renders the payment widget into a `<div>` it manages internally.
 
 ```jsx
 <TokenPurchaseWidget
-  params={widgetParams}      // or clientSecret — not both
+  clientSecret={clientSecret}  // required
+  params={widgetParams}        // optional, for faster first paint
   intentId={intent.id}
   appearance={{ theme: 'night' }}
   className="my-widget"
@@ -100,8 +102,8 @@ Renders the payment widget into a `<div>` it manages internally.
 
 | Prop | Type | Description |
 |---|---|---|
-| `params` | `object` | The `_widget_params` object from your create-intent response. Use this **or** `clientSecret`. |
-| `clientSecret` | `string` | The `client_secret` from your create-intent response. Requires `baseUrl` (Shake DeFi API root) on the parent `<PlatformProvider>`. |
+| `params` | `object` | Optional `_widget_params` from your create-intent response. If provided, the widget renders immediately with cached params for a faster first paint. `clientSecret` is still required. |
+| `clientSecret` | `string` | **Required.** The `client_secret` from your create-intent response (`{intentId}_secret_…`). Always needed: buying requires a live buyer-bound voucher request after wallet connect, which this secret authorizes. Requires `baseUrl` (Shake DeFi API root) on the parent `<PlatformProvider>` only if you don't set it at the SDK level. |
 | `intentId` | `string` | Echoed back in `onSuccess`. |
 | `appearance` | `object` | `{ theme, variables, rules }` — see the `@shake-defi/js` README for the full theme/variable reference. |
 | `onReady` | `() => void` | Widget has rendered and is interactive. |

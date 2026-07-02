@@ -38,10 +38,12 @@ function usePlatformClient() {
 // ── TokenPurchaseWidget component ─────────────────────────────────────────────
 
 // Props:
-//   params          — _widget_params from the create intent response.
-//                     Provide this OR clientSecret, not both.
+//   params          — optional _widget_params from the create intent response.
+//                     If provided, skips the initial params fetch for a faster
+//                     first paint.
 //   clientSecret    — tpi_…_secret_… from the create intent response.
-//                     Widget fetches its own params on mount.
+//                     Always required — buying requires a live buyer-bound
+//                     voucher request after wallet connect.
 //   intentId        — the tpi_… ID (optional, passed to onSuccess)
 //   onReady         — () => void
 //   onChange        — ({ state, step }) => void
@@ -68,8 +70,10 @@ export function TokenPurchaseWidget({
   const containerRef = useRef(null);
   const widgetRef    = useRef(null);
 
-  // The effect re-runs when either params or clientSecret changes. Exactly one
-  // must be provided; the widget constructor will throw if neither or both are.
+  // Re-create the widget when params or clientSecret changes.
+  // clientSecret is always required — the widget constructor will throw if
+  // it is missing. params is optional; when omitted the widget fetches its
+  // own params on mount.
   const initKey = params ?? clientSecret;
 
   useEffect(() => {

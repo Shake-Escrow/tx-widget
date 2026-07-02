@@ -1,6 +1,6 @@
 export interface TokenPurchaseWidgetOptions {
   params?: any;
-  clientSecret?: string;
+  clientSecret: string;
   intentId?: string;
   baseUrl?: string;
   walletConnect?: {

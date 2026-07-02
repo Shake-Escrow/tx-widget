@@ -1,6 +1,6 @@
 {
   "name": "@shake-defi/react",
-  "version": "1.0.1",
+  "version": "2.0.0",
   "description": "React component wrapper for the token purchase widget",
   "author": "Matthew Anderson",
   "repository": {
@@ -45,7 +45,7 @@
     "react-dom": ">=18.0.0"
   },
   "dependencies": {
-    "@shake-defi/js": "^1.0.1"
+    "@shake-defi/js": "^2.0.0"
   },
   "devDependencies": {
     "esbuild": "^0.21.0"

@@ -70,9 +70,9 @@ const intent = await res.json();
 
 ### 3. Mount the widget (client-side)
 
-There are two ways to hand the intent to the widget. Pick one.
+The widget always needs `clientSecret` — even when `params` is also supplied — because a live buyer-bound voucher must be fetched after wallet connect. Pass `params` for a faster first paint (the widget renders immediately with the cached params before the voucher step).
 
-**Option A — pass `params` directly.** Simplest option: no extra network call, no `baseUrl` needed. `price_snapshot` inside it is frozen at intent-creation time.
+**Recommended — pass both `params` and `clientSecret`.** Fast initial render plus live voucher after wallet connect.
 
 ```js
 import { loadPlatformClient } from '@shake-defi/js';
@@ -80,9 +80,14 @@ import { loadPlatformClient } from '@shake-defi/js';
 const client = await loadPlatformClient('pk_live_…');
 
 const widget = client.tokenPurchaseWidget({
-  params: widgetParams,   // intent._widget_params from step 2
+  clientSecret: intent.client_secret,   // tpi_…_secret_… from step 2 (required)
+  params: widgetParams,                  // intent._widget_params from step 2 (optional, for fast first paint)
+  baseUrl: 'https://api.shake-defi.com',
   intentId: intent.id,
   appearance: { theme: 'stripe' },
+  onPriceChange: ({ oldPrice, newPrice, confirmed, canceled }) => {
+    // show the customer the new price; call confirmed() or canceled()
+  },
   onSuccess: ({ intentId, txHash }) => {
     // Optimistic UI update only — confirm fulfillment via webhook.
   },
@@ -94,20 +99,7 @@ const widget = client.tokenPurchaseWidget({
 widget.mount('#purchase-widget');
 ```
 
-**Option B — pass `clientSecret`.** The widget fetches its own params from the Shake DeFi API at mount time, including a live `current_price` — useful if you want accurate `onPriceChange` comparisons without round-tripping through your own backend. Requires `baseUrl` pointing at the Shake DeFi API (not your own server).
-
-```js
-const widget = client.tokenPurchaseWidget({
-  clientSecret: intent.client_secret,    // from step 2
-  baseUrl: 'https://api.shake-defi.com', // matches your key's mode (live/test)
-  intentId: intent.id,
-  onPriceChange: ({ oldPrice, newPrice, confirmed, canceled }) => {
-    // show the customer the new price; call confirmed() or canceled()
-  },
-});
-
-widget.mount('#purchase-widget');
-```
+**`params`-only (no `clientSecret`)** no longer works — the widget constructor throws if `clientSecret` is missing. `clientSecret` is required for every purchase because the backend signs a buyer-bound voucher at `POST /v1/widget/voucher` after wallet connect, and no static `params` object can carry a usable one.
 
 `client_secret` is meant to be handed to the browser — that's the point of this flow — but treat it as a bearer credential scoped to that one intent: don't log it, and don't expose one customer's secret to another. Anyone holding it can read that intent's widget params via the public `GET /v1/widget/params` lookup.
 
@@ -118,7 +110,10 @@ widget.mount('#purchase-widget');
 <script src="https://unpkg.com/@shake-defi/js/dist/platform.js"></script>
 <script>
   const platform = PlatformWidget('pk_live_…');
-  const widget = platform.tokenPurchaseWidget({ params: widgetParams });
+  const widget = platform.tokenPurchaseWidget({
+    clientSecret: 'tpi_…_secret_…',
+    params: widgetParams,   // optional, for fast first paint
+  });
   widget.mount('#purchase-widget');
 </script>
 ```
@@ -163,8 +158,8 @@ Returns a `TokenPurchaseWidget` instance. Not yet mounted — call `.mount()` ne
 
 | Option | Type | Description |
 |---|---|---|
-| `params` | `object` | The `_widget_params` object from your create-intent response. Use this **or** `clientSecret`, not both. |
-| `clientSecret` | `string` | The `client_secret` field from your create-intent response (`{intentId}_secret_…`). The widget fetches its own (live) params on mount. Requires `baseUrl` pointing at the Shake DeFi API. |
+| `params` | `object` | Optional `_widget_params` from your create-intent response. If provided, the widget renders immediately with cached params for a faster first paint. `clientSecret` is still required. |
+| `clientSecret` | `string` | **Required.** The `client_secret` field from your create-intent response (`{intentId}_secret_…`). Always needed: buying requires a live buyer-bound voucher request (`POST /v1/widget/voucher`) after wallet connect, which this secret authorizes. |
 | `intentId` | `string` | The `tpi_…` ID, echoed back in `onSuccess`. |
 | `appearance` | `object` | See [Appearance](#appearance) below. |
 | `onReady` | `() => void` | Fired once the widget has rendered and is interactive. |
